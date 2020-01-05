@@ -1,0 +1,505 @@
+using System.Collections.Generic;
+using System.Globalization;
+using System.IO;
+using System.Net;
+using System.Threading;
+using System;
+using System.Linq;
+using cAlgo.API;
+using cAlgo.API.Indicators;
+using cAlgo.API.Internals;
+using cAlgo.Indicators;
+
+using System.Text;
+
+
+namespace cAlgo.Robots
+{
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
+    public class Tenoris : Robot
+    {
+        [Parameter("Signal TimeFrame 1", DefaultValue = 0)]
+        public TimeFrame tfSignal { get; set; }
+
+        [Parameter("Signal TimeFrame 2", DefaultValue = 0)]
+        public TimeFrame tfSignal_2 { get; set; }
+
+        [Parameter("Signal TimeFrame 3", DefaultValue = 0)]
+        public TimeFrame tfSignal_3 { get; set; }
+
+        [Parameter("Signal TimeFrame 4", DefaultValue = 0)]
+        public TimeFrame tfSignal_4 { get; set; }
+
+        // Risk Factors
+        [Parameter("% Max Risk", DefaultValue = 0.25, Step = 0.25, Group = "Risk Mgmt")]
+        public double Risk_Max { get; set; }
+
+        [Parameter("% Min Risk", DefaultValue = 0.25, Step = 0.25, Group = "Risk Mgmt")]
+        public double Risk_Min { get; set; }
+
+        [Parameter("Max Loss", DefaultValue = 200, Step = 0.5, Group = "Risk Mgmt")]
+        public double maxLoss { get; set; }
+
+        [Parameter("ATR Periods", DefaultValue = 20, Group = "Risk Mgmt")]
+        public int ATR_periods { get; set; }
+
+        [Parameter("ATR Multiple", DefaultValue = 2.5, Group = "Risk Mgmt")]
+        public double ATR_multiple { get; set; }
+
+        [Parameter("Use Trailing Stop", DefaultValue = true, Group = "Risk Mgmt")]
+        public bool UseTrailingStop { get; set; }
+        // Files
+
+        [Parameter("Signal Export File", Group = "Admin", DefaultValue = "C:\\Users\\Hp\\Documents\\PP\\Signals\\")]
+        public string Location_SignalHistory { get; set; }
+
+        [Parameter("Signal Import File", Group = "Admin", DefaultValue = "C:\\Users\\hp\\AppData\\Roaming\\MetaQuotes\\Terminal\\2010C2441A263399B34F537D91A53AC9\\MQL4\\Files\\")]
+        public string Location_SignalImport { get; set; }
+
+        [Parameter("Signal File Prefix", Group = "Admin", DefaultValue = "")]
+        public string FilePrefix { get; set; }
+
+
+
+        //Outputs from SignalData File
+        public double SL1, SL2, SL3;
+        public double Entry, Entry2, Entry3;
+        public double PipsSize, Volume, DD_Final;
+        public string MA, MACD, MACD2, STOCH, STOCH2, Direction;
+
+        public string FileHeader = "Date,Time,Symbol,TimeFrame,Direction,Entry,SL,SL2,SL3,TP,TP1,MA,MACD,MACD2,STOCH,STOCH2" + Environment.NewLine;
+        public string sTF, CSVLine = "", ColSep = ",", sDate, sTime, CSVLine_prev = "";
+
+        public string file_History, file_tfSignal;
+
+        public string TradeSymbol;
+
+        public TradeType TradeDirection;
+
+        public bool NewData = true;
+
+        MarketSeries ms_tfSignal;
+
+        AverageTrueRange _atr;
+
+        string Label;
+
+        protected override void OnStart()
+        {
+            Positions.Closed += OnPositionsClosed;
+            Positions.Opened += OnPositionsOpened;
+            mapTF(tfSignal);
+            Print("TimeFrames Mapped");
+
+            string Env;
+
+            if (FilePrefix == "")
+            {
+                Env = "";
+            }
+            else
+            {
+                Env = "_" + FilePrefix;
+            }
+            file_History = "History_" + Symbol.Name + "_" + sTF + Env + ".csv";
+            file_tfSignal = "Object_List_" + Symbol.Name + "_" + sTF + ".csv";
+
+            if (!File.Exists(Location_SignalHistory + file_History))
+            {
+                Print("Creating new history file!");
+                File.AppendAllText(Location_SignalHistory + file_History, FileHeader);
+                Print("History File: " + Location_SignalHistory + file_History);
+            }
+
+            ms_tfSignal = MarketData.GetSeries(tfSignal);
+            Print("Market Series Loaded");
+
+            _atr = Indicators.AverageTrueRange(ms_tfSignal, ATR_periods, MovingAverageType.Exponential);
+            Print("ATRs Loaded");
+        }
+
+        void OnPositionsOpened(PositionOpenedEventArgs obj)
+        {
+            // Change SL to keep contant equity at risk
+            string LabeltoChange = obj.Position.Label;
+            double Volume_Total = 0;
+            if (FilterPositions(LabeltoChange).Count() > 0)
+            {
+                foreach (var pos in FilterPositions(LabeltoChange))
+                {
+                    Volume_Total += pos.VolumeInUnits;
+                }
+                double SL_new = (Account.Balance * Risk_Max / 100) / (Volume_Total * Symbol.PipValue);
+
+                foreach (var pos in FilterPositions(LabeltoChange))
+                {
+                    pos.ModifyStopLossPips(SL_new);
+                }
+            }
+        }
+
+        void OnPositionsClosed(PositionClosedEventArgs obj)
+        {
+            Print("Position closed: " + obj.Reason);
+            string LabeltoClose = obj.Position.Label;
+            CloseAllPositions(LabeltoClose);
+            CancelAllOrders(LabeltoClose);
+        }
+
+        protected override void OnBar()
+        {
+            Print("** New Bar **");
+
+            ExitCheck();
+
+            CSVLine_prev = CSVLine;
+
+            LoadNewData();
+            //TestFunction();
+
+            if (NewData)
+            {
+                Print("Loading New Data");
+                //Drawdown_Calc();
+                CloseAllPositions(Label);
+                CancelAllOrders(Label);
+                CreateOrders();
+                SaveSignalDataHistory(Location_SignalHistory + file_History);
+            }
+
+            GetMarketStats();
+        }
+
+
+        protected override void OnStop()
+        {
+            Print("Closing up shop");
+        }
+
+
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        void TestFunction()
+        {
+
+            double StopLoss = ATR_periods * ATR_multiple;
+            double OrderVolume = Symbol.NormalizeVolumeInUnits((((Account.Balance * 2 / 100) / 21) / Symbol.PipValue), RoundingMode.ToNearest);
+            Print("StopLoss: {0}, ATR Perids: {1}, ATR Multiple: {2}", 21, ATR_periods, ATR_multiple);
+            Print("Pip Value: {0]", Symbol.PipValue);
+            Print("Volume: {0}", OrderVolume);
+        }
+
+        void LoadNewData()
+        {
+            LoadSignalData(Symbol.Name, sTF);
+
+            string[] OldSignal = CSVLine_prev.Split(',');
+            string[] NewSignal = CSVLine.Split(',');
+
+            if (CSVLine_prev != "")
+            {
+                string OldEntry = (OldSignal[4] + "  " + OldSignal[5]);
+                string NewEntry = (NewSignal[4] + "  " + NewSignal[5]);
+
+                if (OldEntry.Equals(NewEntry))
+                {
+                    NewData = false;
+                    Print("No New Data!");
+                }
+                else if (!OldEntry.Equals(NewEntry))
+                {
+                    NewData = true;
+                    Print("New Data!");
+                }
+            }
+            else
+            {
+                NewData = false;
+            }
+        }
+
+
+        void testfunc()
+        {
+            double order1 = (Account.Balance * Risk_Max / 100) / 21 / Symbol.PipValue;
+
+            Print("order size: {0}", order1);
+        }
+
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        void GetMarketStats()
+        {
+            Print("ATR: {0}", _atr.Result.LastValue);
+            Print("PnL: {0}", Symbol.UnrealizedNetProfit);
+        }
+
+
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        void CreateOrders()
+        {
+
+            var Values = CSVLine.Split(',');
+            Label = Values[2] + "_" + sTF + "_" + Direction + "_" + DateTime.Now.ToString("MM_dd_HH_mm");
+            string Comment = MA + MACD + MACD2 + STOCH + STOCH2;
+            double StopLoss = ATR_periods * ATR_multiple;
+
+            double OrderVolume_Total = ((Account.Balance * Risk_Max / 100) / TrimSL(Entry, SL1) / Symbol.PipValue);
+            //double OrderVolume1 = Symbol.NormalizeVolumeInUnits(OrderVolume_Total * (1 / 10) * (1 / 1), RoundingMode.ToNearest);
+            double OrderVolume1 = Symbol.NormalizeVolumeInUnits(OrderVolume_Total / 2);
+            double OrderVolume2 = Symbol.NormalizeVolumeInUnits(OrderVolume_Total / 3);
+            double OrderVolume3 = Symbol.NormalizeVolumeInUnits(OrderVolume_Total / 4);
+            //OrderVolume = 1000;
+            //Size = Capital * drawdown module * penalty ledger * depreciation * f(strategy stats, side stats)
+
+            //Initial Entry
+            if (Values[4] == "BUY")
+            {
+                TradeDirection = TradeType.Buy;
+                ExecuteMarketOrder(TradeDirection, SymbolName, OrderVolume1, Label, TrimSL(SL1, Entry), null, Comment + 1, UseTrailingStop);
+                //PlaceStopOrder(TradeDirection, SymbolName, OrderVolume2, Entry2, Label, TrimSL(SL2, SL1), null, null, Comment + 2, UseTrailingStop);
+                // PlaceStopOrder(TradeDirection, SymbolName, OrderVolume3, Entry3, Label, TrimSL(SL3, SL2), null, null, Comment + 3, UseTrailingStop);
+            }
+            else if (Values[4] == "SELL")
+            {
+                TradeDirection = TradeType.Sell;
+                ExecuteMarketOrder(TradeDirection, SymbolName, OrderVolume1, Label, TrimSL(SL1, Entry), null, Comment + 1, UseTrailingStop);
+                // PlaceStopOrder(TradeDirection, SymbolName, OrderVolume2, Entry2, Label, TrimSL(SL2, SL1), null, null, Comment + 2, UseTrailingStop);
+                //PlaceStopOrder(TradeDirection, SymbolName, OrderVolume3, Entry3, Label, TrimSL(SL3, SL2), null, null, Comment + 3, UseTrailingStop);
+            }
+        }
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+        void ExitCheck()
+        {
+            if (Symbol.UnrealizedNetProfit < -1 * maxLoss)
+            {
+                Print(Label + " has PnL Loss of more than MaxLoss.");
+                CloseAllPositions(Label);
+                CancelAllOrders(Label);
+                return;
+            }
+
+            if (FilterPositions(Label).Count() > 0)
+            {
+                var Spot = Symbol.Bid + Symbol.Ask;
+                string[] temp_Label = Label.Split('_');
+
+                if (temp_Label[2] == "BUY" && Symbol.Bid < ms_tfSignal.Low.Last(0) && Symbol.Bid < ms_tfSignal.Low.Last(1))
+                {
+                    if (ms_tfSignal.Low.Last(0) < ms_tfSignal.Low.Last(1))
+                    {
+                        Print(Label + " Long positions have breached 2 consecutive lower lows");
+                        CloseAllPositions(Label);
+                        CancelAllOrders(Label);
+                    }
+                }
+                else if (temp_Label[2] == "SELL" && Symbol.Ask > ms_tfSignal.Low.Last(0) && Symbol.Ask > ms_tfSignal.Low.Last(1))
+                {
+                    if (ms_tfSignal.Low.Last(0) > ms_tfSignal.Low.Last(1))
+                    {
+                        Print(Label + " Short positions have breached 2 consecutive higher highs");
+                        CloseAllPositions(Label);
+                        CancelAllOrders(Label);
+                    }
+                }
+            }
+        }
+
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        // Drawdown oscillator to calculate how much to risk on overall trade
+        public void Drawdown_Calc()
+        {
+            double AccountLow = 1000;
+            double AccountPeak = 1000;
+            double DD = (Account.Balance - AccountLow) / (AccountPeak - AccountLow);
+            DD_Final = Math.Min(Risk_Min, DD * Risk_Max) / 100;
+        }
+
+        // function is to Load in data from Signal file produced in MT4 and amend new data to History file
+        private void LoadSignalData(string File_SymbolName, string File_TradeTF)
+        {
+            sDate = DateTime.Now.ToString("dd/MM/yyyy");
+            sTime = DateTime.Now.ToString("HH:mm:ss");
+            var file = string.Format(Location_SignalImport + "PP_{0}_{1}.csv", File_SymbolName, File_TradeTF);
+            var filename = new Uri(file).LocalPath;
+            using (var fs = File.OpenRead(filename))
+                using (var reader = new StreamReader(fs))
+                {
+                    Print("LOADING NEW PP FILE");
+                    while (!reader.EndOfStream)
+                    {
+                        var line = reader.ReadLine();
+                        try
+                        {
+                            sDate = DateTime.Now.ToString("dd/MM/yyyy");
+                            sTime = DateTime.Now.ToString("HH:mm:ss");
+                            ConvertSignalData(line);
+                        } catch
+                        {
+                            //Print("CSV Load Error: {0}", line);
+                        }
+                    }
+                }
+
+            CreateCSVLine();
+            Print("CSV: {0}", CSVLine);
+            Print("CSV Prev: {0}", CSVLine_prev);
+            if (CSVLine_prev != "")
+            {
+                if (CSVLine.Substring(20) != CSVLine_prev.Substring(20))
+                    SaveSignalDataHistory(Location_SignalImport + "History_" + Symbol.Name + "_" + sTF + ".csv");
+            }
+        }
+
+
+        void ConvertSignalData(string temp)
+        {
+            var values = temp.Split(',');
+            //int LineNo = values[0];
+            string Description = values[1].ToString();
+            string Info = values[2];
+            switch (Description)
+            {
+                case "Add1":
+                    Info = Info.Replace("TP or Add at ", "");
+                    Entry2 = double.Parse(Info);
+                    break;
+                case "Add2":
+                    Info = Info.Replace("Add2 at ", "");
+                    Entry3 = double.Parse(Info.ToString());
+                    break;
+                case "Bars Text1":
+                    var temp2 = Info.Split(':');
+                    Entry = double.Parse(temp2[1].ToString());
+                    Direction = temp2[0].ToString();
+                    break;
+                case "MACD2Arrow":
+                    MACD2 = Info;
+                    break;
+                case "MACDArrow":
+                    MACD = Info;
+                    break;
+                case "Risk Text1":
+                    //SL = 1;
+                    break;
+                case "Risk Text2":
+                    Info.Split(' ');
+                    //Volume = Info[0];
+                    break;
+                case "Risk Text3":
+                    Info.Split(' ');
+                    PipsSize = double.Parse(Info[2].ToString());
+                    TradeSymbol = Info[4].ToString();
+                    break;
+                case "SL Text1":
+                    var temp_double = Info.Split(':');
+                    SL1 = double.Parse(temp_double[1]);
+                    break;
+                case "SL1":
+                    Info = Info.Replace("SL at ", "");
+                    SL2 = double.Parse(Info);
+                    break;
+                case "SL2":
+                    Info = Info.Replace("Stop Loss 2 at ", "");
+                    SL3 = double.Parse(Info);
+                    break;
+                case "maArrow":
+                    MA = Info;
+                    break;
+                case "stoch2Arrow":
+                    STOCH2 = Info;
+                    break;
+                case "stochArrow":
+                    STOCH = Info;
+                    // A;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        private IEnumerable<Position> FilterPositions(string Label)
+        {
+            return Positions.Where(p => p.Label == Label && p.SymbolName == Symbol.Name);
+        }
+
+        private IEnumerable<PendingOrder> FilteredOrders(string sLabel)
+        {
+            return PendingOrders.Where(o => o.Label == Label && o.SymbolName == Symbol.Name);
+        }
+
+        private void CancelAllOrders(string Label)
+        {
+            foreach (var order in FilteredOrders(Label))
+            {
+                CancelPendingOrder(order);
+            }
+        }
+
+        private void CloseAllPositions(string Label)
+        {
+            foreach (var position in FilterPositions(Label))
+            {
+                ClosePosition(position);
+            }
+        }
+
+        public double TrimSL(double First, double Second)
+        {
+            return Math.Round(1 * Math.Abs(First - Second) / Symbol.PipSize, 1);
+        }
+        public double TrimTP(double First, double Second)
+        {
+            return Math.Round(1 * Math.Abs(First - Second) / Symbol.PipSize, 1);
+        }
+
+
+        private void SaveSignalDataHistory(string SaveFile)
+        {
+            CreateCSVLine();
+            File.AppendAllText(SaveFile, CSVLine);
+        }
+
+        private void CreateCSVLine()
+        {
+            CSVLine = sDate + ColSep + sTime + ColSep + Symbol.Name + ColSep + sTF + ColSep + Direction + ColSep + Entry + ColSep + SL1 + ColSep + SL2 + ColSep + SL3 + ColSep;
+            CSVLine = CSVLine + Entry2 + ColSep + Entry3 + ColSep + MA + ColSep + MACD + ColSep + MACD2 + ColSep + STOCH + ColSep + STOCH2;
+            CSVLine = CSVLine + Environment.NewLine;
+        }
+
+        //Mappings
+        public void mapTF(TimeFrame _TF)
+        {
+            string _TF_temp = _TF.ToString();
+            if (_TF_temp == "Minute")
+            {
+                sTF = "M1";
+                return;
+            }
+            else if (_TF_temp == "Hour")
+            {
+                sTF = "H1";
+                return;
+            }
+            else if (_TF_temp == "Daily")
+            {
+                sTF = "D1";
+                return;
+            }
+            else
+            {
+                _TF_temp = _TF_temp.Replace("our", "");
+                _TF_temp = _TF_temp.Replace("inute", "");
+                _TF_temp = _TF_temp.Replace("aily", "");
+                _TF_temp = _TF_temp.Replace("eekly", "");
+                sTF = _TF_temp;
+                return;
+            }
+        }
+    }
+}
