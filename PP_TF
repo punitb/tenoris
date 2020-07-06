@@ -20,6 +20,7 @@ namespace cAlgo.Robots
         //public string CCYPairs { get; set; }
         public string CCYPairs = "EURUSD,GBPUSD,USDJPY,AUDUSD,NZDUSD,USDCAD,USDCHF,NZDJPY,NZDCAD,GBPNZD,GBPAUD,EURNZD,AUDJPY,EURJPY,EURGBP,CADCHF,AUDNZD,AUDCAD";
         //public string CCYPairs = "EURUSD,GBPUSD,USDJPY";
+        public Symbols[] MySymbols;
         public int TradeLookBack = 5;
 
         public double BadVolumeSize = 100000;
@@ -27,7 +28,7 @@ namespace cAlgo.Robots
         public double Risk_Max = 0.5;
         public double mATR = 2;
 
-        string InputDir = "C:\\Users\\Punit\\AppData\\Roaming\\MetaQuotes\\Terminal\\2010C2441A263399B34F537D91A53AC9\\MQL4\\Files";
+        string InputDir = "C:\\Users\\Punit\\AppData\\Roaming\\MetaQuotes\\Terminal\\2010C2441A263399B34F537D91A53AC9\\MQL4\\Files\\";
         string LogFile = "C:\\Users\\Punit\\Documents\\Trading\\Logs\\" + "PP_Log2.txt";
 
         string OutputDir = "C:\\Users\\Punit\\Documents\\Trading\\History\\";
@@ -42,6 +43,8 @@ namespace cAlgo.Robots
         public AverageTrueRange[,] _atr;
         public PPTrade[,] NewTrades;
         public PPTrade[,] PrevTrades;
+
+        public Dictionary<string, int> mappingTF = new Dictionary<string, int>();
 
         public int total_assets, total_tf;
         //string InputDir = "C:\\temp\\1\\";
@@ -63,6 +66,9 @@ namespace cAlgo.Robots
             for (int i = 0; i < CCYPair_Count; i++)
                 Assets[i] = temp[i];
 
+
+
+
             TF = new TimeFrame[7];
 
             TF[0] = TimeFrame.Minute5;
@@ -81,8 +87,17 @@ TF[0] = TimeFrame.Minute;
             TF[5] = TimeFrame.Hour4;
             TF[6] = TimeFrame.Daily;*/
 
+
             total_assets = CCYPair_Count;
             total_tf = TF.GetUpperBound(0);
+            for (int i = 0; i < total_tf; i++)
+            {
+                mappingTF.Add(MapTF(TF[i]), i);
+                //Print(mappingTF.Keys[MapTF(TF[i])] + "\t" + mappingTF.Values);
+            }
+
+            Print("Printing MappingTF..");
+
             MktData = new Bars[total_assets, total_tf];
             _atr = new AverageTrueRange[total_assets, total_tf];
             Label = new string[total_assets, total_tf];
@@ -119,7 +134,7 @@ TF[0] = TimeFrame.Minute;
 
         private void OnPositionsClosed(PositionClosedEventArgs obj)
         {
-            AddHistoryData();
+            // AddHistoryData();
         }
 
 
@@ -244,7 +259,9 @@ TF[0] = TimeFrame.Minute;
                     string removeitems = "20,19,17,16,15,13,12,11,10,7,6,5,2";
                     foreach (var num in removeitems.Split(','))
                         item.RemoveAt(int.Parse(num));
-
+                    string[] File_split = Files[i].Replace(OutputDir, "").Split('_');
+                    //string[] CCYPairs;
+                    //int nth_asset = CCYPairs.IndexOf(CCYPairs, File_split[1]);
                     int asset_n = (i / 6);
                     int tf_n = (i % 6);
                     NewData = string.Format("{0},{1},{2}", Assets[asset_n], MapTF(TF[tf_n]), string.Join(",", item));
@@ -262,6 +279,7 @@ TF[0] = TimeFrame.Minute;
             {
                 for (int k = TF.GetLowerBound(0) + 1; k < TF.GetUpperBound(0) - 1; k++)
                 {
+                    Symbol currentSymbol = Symbols.GetSymbol(Assets[j]);
                     double UID = (double)j + (double)k / 10;
                     if (NewTrades[j, k] != null && PrevTrades[j, k] != null)
                     {
@@ -271,13 +289,13 @@ TF[0] = TimeFrame.Minute;
                         if (!Entry && !Direction)
                         {
                             double Close = MarketData.GetBars(TF[k], Assets[j]).ClosePrices.Last(0);
-                            double atr = _atr[j, k].Result.LastValue / Symbol.PipSize;
-                            double StopLoss = Math.Round(Math.Abs(NewTrades[j, k].Entry - NewTrades[j, k].StopLoss) / Symbol.PipSize, 1);
+                            double atr = _atr[j, k].Result.LastValue / currentSymbol.PipSize;
+                            double StopLoss = Math.Round(Math.Abs(NewTrades[j, k].Entry - NewTrades[j, k].StopLoss) / currentSymbol.PipSize, 1);
 
                             if (NewTrades[j, k].TradeDir == TradeType.Buy)
                             {
                                 double WinRate = LastWinRate(Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
-                                double OrderVolume = GetOrderVolume(StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
+                                double OrderVolume = GetOrderVolume(currentSymbol, StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
                                 if (Close > NewTrades[j, k].Entry)
                                 {
 
@@ -292,16 +310,16 @@ TF[0] = TimeFrame.Minute;
 
                                 for (int i = 1; i < 4; i++)
                                 {
-                                    OrderVolume = LastWinRate(Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack) < 0.6 ? 1000 : GetOrderVolume(StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
+                                    OrderVolume = LastWinRate(Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack) < 0.6 ? 1000 : GetOrderVolume(currentSymbol, StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
 
-                                    PlaceStopOrder(NewTrades[j, k].TradeDir, Assets[j], OrderVolume, NewTrades[j, k].Entry + i * StopLoss * Symbol.PipSize, Label[j, k], StopLoss, null, null, Comment(i, j, k, WinRate));
+                                    PlaceStopOrder(NewTrades[j, k].TradeDir, Assets[j], OrderVolume, NewTrades[j, k].Entry + i * StopLoss * currentSymbol.PipSize, Label[j, k], StopLoss, null, null, Comment(i, j, k, WinRate));
                                     Logger(string.Format("Stop Order Placed {0}-{1}", Label[j, k], i));
                                 }
                             }
                             else if (NewTrades[j, k].TradeDir == TradeType.Sell)
                             {
                                 double WinRate = LastWinRate(Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
-                                double OrderVolume = GetOrderVolume(StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
+                                double OrderVolume = GetOrderVolume(currentSymbol, StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
 
                                 if (Close < NewTrades[j, k].Entry)
                                 {
@@ -316,9 +334,9 @@ TF[0] = TimeFrame.Minute;
 
                                 for (int i = 2; i < 4; i++)
                                 {
-                                    OrderVolume = GetOrderVolume(StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
+                                    OrderVolume = GetOrderVolume(currentSymbol, StopLoss, Risk_Max, 1, Assets[j], TF[k], NewTrades[j, k].TradeDir, TradeLookBack);
 
-                                    PlaceStopOrder(NewTrades[j, k].TradeDir, Assets[j], OrderVolume, NewTrades[j, k].Entry - i * StopLoss * Symbol.PipSize, Label[j, k], StopLoss, null, null, Comment(i, j, k, WinRate));
+                                    PlaceStopOrder(NewTrades[j, k].TradeDir, Assets[j], OrderVolume, NewTrades[j, k].Entry - i * StopLoss * currentSymbol.PipSize, Label[j, k], StopLoss, null, null, Comment(i, j, k, WinRate));
                                     Logger(string.Format("Stop Order Placed {0}-{1}", Label[j, k], i));
                                 }
                             }
@@ -343,6 +361,7 @@ TF[0] = TimeFrame.Minute;
             {
                 for (int k = TF.GetLowerBound(0) + 1; k < TF.GetUpperBound(0) - 1; k++)
                 {
+                    Symbol currentSymbol = Symbols.GetSymbol(Assets[j]);
                     Print(Label[j, k]);
                     if (Positions.FindAll(Label[j, k]).Count() > 0)
                     {
@@ -352,54 +371,54 @@ TF[0] = TimeFrame.Minute;
                             Symbol symbol = Symbols.GetSymbol(Assets[j]);
                             double MaxLoss = 0.0;
                             if (pos.StopLoss.HasValue)
-                                MaxLoss = (double)(pos.EntryPrice - pos.StopLoss) * symbol.PipValue * pos.VolumeInUnits / symbol.PipSize;
+                                MaxLoss = (double)(pos.EntryPrice - pos.StopLoss) * currentSymbol.PipValue * pos.VolumeInUnits / currentSymbol.PipSize;
 
                             Logger(string.Format("{0} MaxLoss: {1}", Label[j, k], MaxLoss));
                             if (pos.NetProfit > Math.Abs(MaxLoss) && !pos.HasTrailingStop)
                             {
                                 pos.ModifyStopLossPrice(pos.EntryPrice);
                                 pos.ModifyTrailingStop(true);
-                                if (pos.VolumeInUnits > symbol.VolumeInUnitsMin)
-                                    pos.ModifyVolume(Symbol.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
+                                if (pos.VolumeInUnits > currentSymbol.VolumeInUnitsMin)
+                                    pos.ModifyVolume(currentSymbol.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
                             }
 
                             //if 2 lower lows, then close trades
                             if (MktData[j, k].LowPrices.Last(0) < MktData[j, k].LowPrices.Last(1))
                             {
-                                if (pos.VolumeInUnits != symbol.VolumeInUnitsMin)
+                                if (pos.VolumeInUnits != currentSymbol.VolumeInUnitsMin)
                                 {
-                                    pos.ModifyVolume(Symbol.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
+                                    pos.ModifyVolume(currentSymbol.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
                                 }
                                 else
                                 {
-                                    CloseAllPositions(Label[j, k], TradeType.Buy);
-                                    CancelAllOrders(Label[j, k], TradeType.Buy);
+                                    CloseAllPositions(Label[j, k], currentSymbol, TradeType.Buy);
+                                    CancelAllOrders(Label[j, k], currentSymbol, TradeType.Buy);
                                 }
                             }
 
                             if (MktData[j, k].LowPrices.Last(0) < MktData[j, k].LowPrices.Last(1) && MktData[j, k].LowPrices.Last(1) < MktData[j, k].LowPrices.Last(2))
                             {
-                                CloseAllPositions(Label[j, k], TradeType.Buy);
-                                CancelAllOrders(Label[j, k], TradeType.Buy);
+                                CloseAllPositions(Label[j, k], currentSymbol, TradeType.Buy);
+                                CancelAllOrders(Label[j, k], currentSymbol, TradeType.Buy);
                             }
 
                             if (MktData[j, k].HighPrices.Last(0) > MktData[j, k].HighPrices.Last(1))
                             {
-                                if (pos.VolumeInUnits != symbol.VolumeInUnitsMin)
+                                if (pos.VolumeInUnits != currentSymbol.VolumeInUnitsMin)
                                 {
-                                    pos.ModifyVolume(Symbol.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
+                                    pos.ModifyVolume(currentSymbol.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
                                 }
                                 else
                                 {
-                                    CloseAllPositions(Label[j, k], TradeType.Buy);
-                                    CancelAllOrders(Label[j, k], TradeType.Buy);
+                                    CloseAllPositions(Label[j, k], currentSymbol, TradeType.Buy);
+                                    CancelAllOrders(Label[j, k], currentSymbol, TradeType.Buy);
                                 }
                             }
 
                             if (MktData[j, k].HighPrices.Last(0) > MktData[j, k].HighPrices.Last(1) && MktData[j, k].HighPrices.Last(1) > MktData[j, k].HighPrices.Last(2))
                             {
-                                CloseAllPositions(Label[j, k], TradeType.Sell);
-                                CancelAllOrders(Label[j, k], TradeType.Sell);
+                                CloseAllPositions(Label[j, k], currentSymbol, TradeType.Sell);
+                                CancelAllOrders(Label[j, k], currentSymbol, TradeType.Sell);
                             }
                         }
                     }
@@ -459,39 +478,39 @@ TF[0] = TimeFrame.Minute;
             return sTF;
         }
 
-        private double EquityAtRisk(double AccountSize, double Px, double SL, double OrderVolume)
+        private double EquityAtRisk(double AccountSize, double Px, double SL, double OrderVolume, Symbol currentSymbol)
         {
-            double Equity = (Px - SL) * Symbol.PipValue * OrderVolume;
+            double Equity = (Px - SL) * currentSymbol.PipValue * OrderVolume;
             return Math.Round(Equity * 100 / AccountSize, 3);
         }
 
-        private double GetOrderVolume(double StopLoss, double Risk, int NoOfTrades, string asset, TimeFrame tf, TradeType TradeDir, int TradeLookBack)
+        private double GetOrderVolume(Symbol currentSymbol, double StopLoss, double Risk, int NoOfTrades, string asset, TimeFrame tf, TradeType TradeDir, int TradeLookBack)
         {
             double risk_tranche = Risk / NoOfTrades;
-            double _OrderVolume = ((Account.Balance * risk_tranche / 100) / StopLoss / Symbol.PipValue);
+            double _OrderVolume = ((Account.Balance * risk_tranche / 100) / StopLoss / currentSymbol.PipValue);
             double FinalVolume = Math.Max(1000.0, Math.Min(BadVolumeSize, _OrderVolume));
-            FinalVolume = LastWinRate(asset, tf, TradeDir, TradeLookBack) < 0.6 ? 1000 : Symbol.NormalizeVolumeInUnits(FinalVolume, RoundingMode.ToNearest);
+            FinalVolume = LastWinRate(asset, tf, TradeDir, TradeLookBack) < 0.6 ? 1000 : currentSymbol.NormalizeVolumeInUnits(FinalVolume, RoundingMode.ToNearest);
             return FinalVolume;
         }
-        private IEnumerable<Position> FilterPositions(string Label, TradeType TradeDirection)
+        private IEnumerable<Position> FilterPositions(string Label, Symbol currentSymbol, TradeType TradeDirection)
         {
-            return Positions.Where(p => p.Label == Label && p.SymbolName == Symbol.Name && p.TradeType == TradeDirection);
+            return Positions.Where(p => p.Label == Label && p.SymbolName == currentSymbol.Name && p.TradeType == TradeDirection);
         }
 
-        private IEnumerable<PendingOrder> FilteredOrders(string Label, TradeType TradeDirection)
+        private IEnumerable<PendingOrder> FilteredOrders(string Label, Symbol currentSymbol, TradeType TradeDirection)
         {
-            return PendingOrders.Where(o => o.Label == Label && o.SymbolName == Symbol.Name && o.TradeType == TradeDirection);
+            return PendingOrders.Where(o => o.Label == Label && o.SymbolName == currentSymbol.Name && o.TradeType == TradeDirection);
         }
 
-        private void CancelAllOrders(string Label, TradeType TradeDirection)
+        private void CancelAllOrders(string Label, Symbol currentSymbol, TradeType TradeDirection)
         {
-            foreach (var order in FilteredOrders(Label, TradeDirection))
+            foreach (var order in FilteredOrders(Label, currentSymbol, TradeDirection))
                 CancelPendingOrder(order);
         }
 
-        private void CloseAllPositions(string Label, TradeType TradeDirection)
+        private void CloseAllPositions(string Label, Symbol currentSymbol, TradeType TradeDirection)
         {
-            foreach (var position in FilterPositions(Label, TradeDirection))
+            foreach (var position in FilterPositions(Label, currentSymbol, TradeDirection))
                 ClosePosition(position);
         }
         public class PPTrade
