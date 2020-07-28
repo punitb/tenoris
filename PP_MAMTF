@@ -1,0 +1,543 @@
+using System;
+using System.IO;
+using System.Linq;
+using cAlgo.API;
+using cAlgo.API.Indicators;
+using cAlgo.API.Internals;
+using cAlgo.Indicators;
+using System.Collections.Generic;
+using System.Collections;
+
+namespace cAlgo.Robots
+{
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.FullAccess)]
+    public class MA_MTF2 : Robot
+    {
+        double Risk_Max = 1;
+        bool UseTrailingStop = false;
+        double BadVolumeSize = 50000;
+        int TradeLookBack = 5;
+
+        string LogFile = "C:\\Users\\Punit\\Documents\\Trading\\PP\\Logs\\" + "Log.txt";
+        string OutputDir = "C:\\Users\\Punit\\Documents\\Trading\\PP\\History\\";
+        string FileHistoryMktDataHeader = "DateTime,AssetID,TradeDirection,Entry,Desc,StopLoss,TakeProfit,ATR";
+        string InputDir = "C:\\Users\\Punit\\AppData\\Roaming\\MetaQuotes\\Terminal\\2010C2441A263399B34F537D91A53AC9\\MQL4\\Files\\";
+        string FileHistoryHeader = "DateTime,Asset,TimeFrame,TradeDirection,Entry,PnL" + Environment.NewLine;
+
+        string[] symbols = 
+        {
+            "EURUSD",
+            "USDJPY"
+        };
+
+        TimeFrame[] tf = 
+        {
+            TimeFrame.Minute5,
+            TimeFrame.Minute15,
+            TimeFrame.Minute30,
+            TimeFrame.Hour,
+            TimeFrame.Hour4,
+            TimeFrame.Daily
+        };
+
+        List<PP_Strat> strategies = new List<PP_Strat>();
+        List<PPTrade> NewTrades = new List<PPTrade>();
+        List<PPTrade> PrevTrades = new List<PPTrade>();
+
+        protected override void OnStart()
+        {
+
+            foreach (var sym in symbols)
+            {
+                var PP1 = new PP_Strat(InputDir, LogFile, OutputDir, FileHistoryHeader, FileHistoryMktDataHeader, Risk_Max, UseTrailingStop, BadVolumeSize, TradeLookBack);
+                PP1.init(this, sym, TimeFrame.Minute5);
+                strategies.Add(PP1);
+
+                var PP2 = new PP_Strat(InputDir, LogFile, OutputDir, FileHistoryHeader, FileHistoryMktDataHeader, Risk_Max, UseTrailingStop, BadVolumeSize, TradeLookBack);
+                PP2.init(this, sym, TimeFrame.Minute15);
+                strategies.Add(PP2);
+
+                var PP3 = new PP_Strat(InputDir, LogFile, OutputDir, FileHistoryHeader, FileHistoryMktDataHeader, Risk_Max, UseTrailingStop, BadVolumeSize, TradeLookBack);
+                PP3.init(this, sym, TimeFrame.Minute30);
+                strategies.Add(PP3);
+
+                var PP4 = new PP_Strat(InputDir, LogFile, OutputDir, FileHistoryHeader, FileHistoryMktDataHeader, Risk_Max, UseTrailingStop, BadVolumeSize, TradeLookBack);
+                PP4.init(this, sym, TimeFrame.Hour);
+                strategies.Add(PP4);
+
+                var PP5 = new PP_Strat(InputDir, LogFile, OutputDir, FileHistoryHeader, FileHistoryMktDataHeader, Risk_Max, UseTrailingStop, BadVolumeSize, TradeLookBack);
+                PP5.init(this, sym, TimeFrame.Hour4);
+                strategies.Add(PP5);
+
+                var PP6 = new PP_Strat(InputDir, LogFile, OutputDir, FileHistoryHeader, FileHistoryMktDataHeader, Risk_Max, UseTrailingStop, BadVolumeSize, TradeLookBack);
+                PP6.init(this, sym, TimeFrame.Daily);
+                strategies.Add(PP6);
+
+
+            }
+        }
+
+        public class PPTrade
+        {
+            public string AssetID { get; set; }
+            public string Desc { get; set; }
+            public TradeType TradeDir { get; set; }
+            public double Entry { get; set; }
+            public double StopLoss { get; set; }
+            public double TakeProfit { get; set; }
+            public string AllData { get; set; }
+            public string[] OriginalData { get; set; }
+
+            public PPTrade(string[] item)
+            {
+                //var item = line.Split(',');
+                AssetID = item[0] + item[1];
+                Desc = string.Format("{0}{1}{2}{3}{4}", item[9], item[7], item[6], item[11], item[10]);
+                TradeDir = item[5].Split(':').First() == "BUY" ? TradeType.Buy : TradeType.Sell;
+                Entry = double.Parse(item[5].Split(':').Last());
+                StopLoss = double.Parse(item[8].Split(':').Last());
+                TakeProfit = double.Parse(item[2].Split(' ').Last());
+                AllData = string.Concat(AssetID, TradeDir, Entry, Desc);
+                OriginalData = item;
+            }
+        }
+        // Sell when RSI crosses above 70
+        public class PP_Strat
+        {
+
+            Bars MktData;
+            AverageTrueRange _atr;
+            string Label;
+            PPTrade NewTrades;
+            PPTrade PrevTrades;
+
+            double mATR;
+            double Risk_Covered;
+            double Risk_Max;
+            bool UseTrailingStop;
+            double BadVolumeSize;
+
+            int TradeLookBack;
+            double StopLoss, OrderVolume;
+            string TradeComment;
+
+            //Vars used in every bar
+            double Close, atr;
+
+
+            Symbol Asset;
+            Robot bot;
+            string Tf;
+            TimeFrame tf;
+            string symbol;
+            string LogFile, OutputDir, FileHistoryMktDataHeader, InputDir, FileHistoryHeader;
+
+            /* MktData = new Bars;
+            _atr = new AverageTrueRange;
+            Label = new string;
+            NewTrades = new PPTrade;
+            PrevTrades = new PPTrade;*/
+
+            public PP_Strat(string _InputDir, string _Logfile, string _OutputDir, string _FileHistoryMktDataHeader, string _FileHistoryHeader, double _Risk_Max, bool _UseTrailingStop, double _BadVolumeSize, int _TradeLookBack)
+            {
+                LogFile = _Logfile;
+                OutputDir = _OutputDir;
+                InputDir = _InputDir;
+                FileHistoryMktDataHeader = _FileHistoryMktDataHeader;
+                FileHistoryHeader = _FileHistoryHeader;
+                Risk_Max = _Risk_Max;
+                UseTrailingStop = _UseTrailingStop;
+                BadVolumeSize = _BadVolumeSize;
+                TradeLookBack = _TradeLookBack;
+            }
+
+            public void init(Robot bot, string symbol, TimeFrame tf)
+            {
+                this.symbol = symbol;
+                this.bot = bot;
+                this.tf = tf;
+
+                Asset = bot.Symbols.GetSymbol(symbol);
+                MktData = bot.MarketData.GetBars(tf, symbol);
+                _atr = bot.Indicators.AverageTrueRange(MktData, 20, MovingAverageType.Simple);
+                Label = string.Format("{0}_{1}_{2}", "PP", symbol, MapTF(tf));
+                //Label = string.Format("{0}", "PP");
+                //Tf = MapTF(tf);
+                //Asset.Tick += Symbol_Tick;
+                MktData.BarOpened += OnBarOpened;
+            }
+
+
+            private void Symbol_Tick(SymbolTickEventArgs obj)
+            {
+                foreach (var pos in bot.Positions.FindAll(Label))
+                {
+                    int BS = pos.TradeType == TradeType.Buy ? -1 : 1;
+
+                    double MaxLoss = Math.Abs(pos.EntryPrice - pos.StopLoss.Value) * Asset.PipValue * pos.VolumeInUnits / Asset.PipSize;
+                    double NewVolume = Asset.NormalizeVolumeInUnits(pos.VolumeInUnits * Risk_Covered, RoundingMode.Up);
+                    if (pos.NetProfit > 1 * MaxLoss && pos.VolumeInUnits >= 2 * Asset.VolumeInUnitsMin && !pos.HasTrailingStop)
+                    {
+                        bot.Print("{0}-{1} ==> Cut Positions and let run", Asset.Name.ToString(), bot.TimeFrame.ToString());
+                        pos.ModifyStopLossPrice(Math.Round(pos.EntryPrice, Asset.Digits));
+                        pos.ModifyTrailingStop(true);
+                        if (pos.VolumeInUnits > Asset.VolumeInUnitsMin)
+                            pos.ModifyVolume(NewVolume);
+                    }
+                }
+            }
+            void GetSymbolFiles()
+            {
+                string FilePattern = string.Format("{0}{1}{2}{3}{4}", "*", Asset.Name, "_", MapTF(tf), "*");
+                foreach (string file in Directory.GetFiles(InputDir, FilePattern))
+                {
+                    using (var reader = new StreamReader(file))
+                    {
+                        List<string> item = new List<string>();
+                        while (!reader.EndOfStream)
+                        {
+                            var line = reader.ReadLine();
+                            if (line.Length > 3)
+                            {
+                                var values = line.Split(',');
+                                item.Add(values[2]);
+                            }
+                        }
+
+                        string removeitems = "20,19,17,16,15,13,12,11,10,7,6,5,2";
+                        foreach (var num in removeitems.Split(','))
+                            item.RemoveAt(int.Parse(num));
+                        string NewData = string.Format("{0},{1},{2}", Asset.Name, MapTF(tf), string.Join(",", item));
+                        //bot.Print(NewData.ToString());
+                        NewTrades = new PPTrade(NewData.Split(','));
+
+                    }
+                }
+            }
+
+            void OnBarOpened(BarOpenedEventArgs obj)
+            {
+
+                bot.Print("{0} {1} --> ===\tNew Asset-Bar\t===\t{2}", Asset.Name, obj.Bars.TimeFrame, obj.Bars.OpenTimes.Last(0));
+
+                // VARS IN USE
+                Close = obj.Bars.ClosePrices.Last(0);
+                atr = _atr.Result.LastValue;
+
+                Logger(string.Format("New Bar {0} {1}", Asset.Name, MapTF(tf)));
+
+                GetSymbolFiles();
+
+                Logger("Checking Open Risk\t\t======================================");
+                CheckRisks();
+
+                Logger("Creating New Trades\t\t======================================");
+                CreateTrades();
+
+
+                if (NewTrades != null)
+                {
+                    PrevTrades = new PPTrade(NewTrades.OriginalData);
+                    SaveMktDataHistory(1, 2);
+                }
+            }
+
+            //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+            // HELPER FUNCTIONS
+
+
+
+            void SaveMktDataHistory(int j, int k)
+            {
+                string Filename = "History_MktData_" + Label;
+                string SaveText = string.Format("{0},{1},{2},{3}", NewTrades.AllData, NewTrades.StopLoss, NewTrades.TakeProfit, _atr.Result.LastValue);
+
+                if (!File.Exists(OutputDir + Filename))
+                {
+                    bot.Print("Creating new history Trade File!" + Filename);
+                    File.AppendAllText(OutputDir + Filename, FileHistoryMktDataHeader);
+                    File.AppendAllText(OutputDir + Filename, DateTime.Now + " = " + SaveText + Environment.NewLine);
+                }
+                else
+                {
+                    File.AppendAllText(OutputDir + Filename, DateTime.Now + " = " + SaveText + Environment.NewLine);
+                }
+
+            }
+
+            void AddHistoryData()
+            {
+                bot.Print("Adding Last Trade to History\t\t=============================");
+                string win_loss = "";
+                double PnL = 0.0;
+                int history_count = bot.History.Count;
+
+                HistoricalTrade trade = bot.History[history_count - 1];
+                if (trade.Label.Substring(0, 2) == "PP")
+                {
+                    win_loss = trade.NetProfit > 0 ? "Win" : "Loss";
+                    PnL = trade.NetProfit;
+                    string file_Name = "History_" + trade.Label + ".csv";
+                    string[] AssetID = trade.Label.Split('_');
+
+                    string SaveText = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8}", AssetID[1], AssetID[2], trade.TradeType, trade.EntryPrice, trade.NetProfit, win_loss, trade.EntryTime, trade.ClosingTime);
+
+                    if (!File.Exists(OutputDir + file_Name))
+                    {
+                        bot.Print("Creating new history Trade File!" + file_Name);
+                        File.AppendAllText(OutputDir + file_Name, FileHistoryHeader);
+                        File.AppendAllText(OutputDir + file_Name, DateTime.Now + " = " + SaveText + Environment.NewLine);
+                    }
+                    else
+                    {
+                        File.AppendAllText(OutputDir + file_Name, DateTime.Now + " = " + SaveText + Environment.NewLine);
+                    }
+                }
+            }
+
+
+
+            void CreateTrades()
+            {
+                if (NewTrades != null && PrevTrades != null)
+                {
+                    bool Entry = NewTrades.Entry == PrevTrades.Entry;
+                    bool Direction = NewTrades.TradeDir == PrevTrades.TradeDir;
+                    bot.Print("{6}\t\t{0} {1} {2}={3} {4}={5}", Entry, Direction, NewTrades.Entry, PrevTrades.Entry, NewTrades.TradeDir, PrevTrades.TradeDir, NewTrades.AssetID);
+                    if (!Entry && !Direction)
+                    {
+                        double Close = bot.MarketData.GetBars(tf, Asset.Name).ClosePrices.Last(0);
+                        double atr = _atr.Result.LastValue / Asset.PipSize;
+                        double StopLoss = Math.Round(Math.Abs(NewTrades.Entry - NewTrades.StopLoss) / Asset.PipSize, 1);
+
+                        if (NewTrades.TradeDir == TradeType.Buy)
+                        {
+                            double WinRate = LastWinRate(NewTrades.TradeDir, TradeLookBack);
+                            double OrderVolume = GetOrderVolume(Asset, StopLoss, Risk_Max, 1, NewTrades.TradeDir, TradeLookBack);
+                            if (Close > NewTrades.Entry)
+                            {
+
+                                bot.ExecuteMarketOrder(NewTrades.TradeDir, Asset.Name, OrderVolume, Label, StopLoss, null, Comment(1, WinRate));
+                                Logger(string.Format("Mkt Order {0}-{1}", Label, 1));
+                            }
+                            else
+                            {
+                                bot.PlaceStopOrder(NewTrades.TradeDir, Asset.Name, OrderVolume, NewTrades.Entry, Label, StopLoss, null, null, Comment(1, WinRate));
+                                Logger(string.Format("Mkt Stop {0}-{1}", Label, 1));
+                            }
+
+                            for (int i = 1; i < 4; i++)
+                            {
+                                OrderVolume = LastWinRate(NewTrades.TradeDir, TradeLookBack) < 0.6 ? 1000 : GetOrderVolume(Asset, StopLoss, Risk_Max, 1, NewTrades.TradeDir, TradeLookBack);
+
+                                bot.PlaceStopOrder(NewTrades.TradeDir, Asset.Name, OrderVolume, NewTrades.Entry + i * StopLoss * Asset.PipSize, Label, StopLoss, null, null, Comment(i, WinRate));
+                                Logger(string.Format("Stop Order Placed {0}-{1}", Label, i));
+                            }
+                        }
+                        else if (NewTrades.TradeDir == TradeType.Sell)
+                        {
+                            double WinRate = LastWinRate(NewTrades.TradeDir, TradeLookBack);
+                            double OrderVolume = GetOrderVolume(Asset, StopLoss, Risk_Max, 1, NewTrades.TradeDir, TradeLookBack);
+
+                            if (Close < NewTrades.Entry)
+                            {
+                                bot.ExecuteMarketOrder(NewTrades.TradeDir, Asset.Name, OrderVolume, Label, StopLoss, null, Comment(1, WinRate));
+                                Logger(string.Format("Mkt Order {0}-{1}", Label, 1));
+                            }
+                            else
+                            {
+                                bot.PlaceStopOrder(NewTrades.TradeDir, Asset.Name, OrderVolume, NewTrades.Entry, Label, StopLoss, null, null, Comment(1, WinRate));
+                                Logger(string.Format("Stop Order {0}-{1}", Label, 1));
+                            }
+
+                            for (int i = 2; i < 4; i++)
+                            {
+                                OrderVolume = GetOrderVolume(Asset, StopLoss, Risk_Max, 1, NewTrades.TradeDir, TradeLookBack);
+
+                                bot.PlaceStopOrder(NewTrades.TradeDir, Asset.Name, OrderVolume, NewTrades.Entry - i * StopLoss * Asset.PipSize, Label, StopLoss, null, null, Comment(i, WinRate));
+                                Logger(string.Format("Stop Order Placed {0}-{1}", Label, i));
+                            }
+                        }
+                    }
+                }
+            }
+
+            string Comment(int i, double WinRate)
+            {
+                string Desc_prevTF = NewTrades == null ? "CCCC" : NewTrades.Desc;
+                string Desc_nextTF = NewTrades == null ? "CCCC" : NewTrades.Desc;
+                string Final = string.Format("{0}_{1}_{2}_{3}_{4}", i, Desc_prevTF, NewTrades.Desc, Desc_nextTF, WinRate);
+                return Final;
+            }
+
+            void CheckRisks()
+            {
+
+                bot.Print(Label);
+                if (bot.Positions.FindAll(Label).Count() > 0)
+                {
+                    bot.Print(bot.Positions.FindAll(Label).Count());
+                    foreach (Position pos in bot.Positions.FindAll(Label))
+                    {
+                        double MaxLoss = 0.0;
+                        if (pos.StopLoss.HasValue)
+                            MaxLoss = (double)(pos.EntryPrice - pos.StopLoss) * Asset.PipValue * pos.VolumeInUnits / Asset.PipSize;
+
+                        Logger(string.Format("{0} MaxLoss: {1}", Label, MaxLoss));
+                        if (pos.NetProfit > Math.Abs(MaxLoss) && !pos.HasTrailingStop)
+                        {
+                            pos.ModifyStopLossPrice(pos.EntryPrice);
+                            pos.ModifyTrailingStop(true);
+                            if (pos.VolumeInUnits > Asset.VolumeInUnitsMin)
+                                pos.ModifyVolume(Asset.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
+                        }
+
+                        //if 2 lower lows, then close trades
+                        if (MktData.LowPrices.Last(0) < MktData.LowPrices.Last(1))
+                        {
+                            if (pos.VolumeInUnits != Asset.VolumeInUnitsMin)
+                            {
+                                pos.ModifyVolume(Asset.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
+                            }
+                            else
+                            {
+                                CloseAllPositions(Label, Asset, TradeType.Buy);
+                                CancelAllOrders(Label, Asset, TradeType.Buy);
+                            }
+                        }
+
+                        if (MktData.LowPrices.Last(0) < MktData.LowPrices.Last(1) && MktData.LowPrices.Last(1) < MktData.LowPrices.Last(2))
+                        {
+                            CloseAllPositions(Label, Asset, TradeType.Buy);
+                            CancelAllOrders(Label, Asset, TradeType.Buy);
+                        }
+
+                        if (MktData.HighPrices.Last(0) > MktData.HighPrices.Last(1))
+                        {
+                            if (pos.VolumeInUnits != Asset.VolumeInUnitsMin)
+                            {
+                                pos.ModifyVolume(Asset.NormalizeVolumeInUnits(0.5 * pos.VolumeInUnits));
+                            }
+                            else
+                            {
+                                CloseAllPositions(Label, Asset, TradeType.Buy);
+                                CancelAllOrders(Label, Asset, TradeType.Buy);
+                            }
+                        }
+
+                        if (MktData.HighPrices.Last(0) > MktData.HighPrices.Last(1) && MktData.HighPrices.Last(1) > MktData.HighPrices.Last(2))
+                        {
+                            CloseAllPositions(Label, Asset, TradeType.Sell);
+                            CancelAllOrders(Label, Asset, TradeType.Sell);
+                        }
+                    }
+                }
+            }
+
+
+
+
+            double LastWinRate(TradeType TradeDir, int TradeLookBack)
+            {
+                double Wins = 0;
+                int count = 0;
+                string temp_label = string.Format("{0}_{1}_{2}", "PP", Asset, Tf);
+                foreach (HistoricalTrade trade in bot.History.FindAll(temp_label))
+                {
+                    if (trade.NetProfit > 0)
+                    {
+                        Wins++;
+                    }
+                    count++;
+                    if (count > TradeLookBack)
+                        break;
+                }
+                double FinalWinRate = 100 * Math.Round(Wins / TradeLookBack, 2);
+                Logger("WinRate:" + FinalWinRate + " with Lookback: " + TradeLookBack);
+                return FinalWinRate;
+            }
+
+
+            //Helper Functions
+            public void Logger(string Text)
+            {
+                string Filename = LogFile;
+                FileStream stream = null;
+                stream = new FileStream(Filename, FileMode.Append);
+                using (StreamWriter sw = new StreamWriter(stream))
+                {
+                    string FinalText = DateTime.Now + " = " + Text;
+                    sw.WriteLine(FinalText);
+                }
+                bot.Print(Text);
+            }
+
+
+
+            public string MapTF(TimeFrame _TF)
+            {
+                string sTF;
+                string _TF_temp = _TF.ToString();
+                if (_TF_temp == "Minute")
+                {
+                    sTF = "M1";
+                }
+                else if (_TF_temp == "Hour")
+                {
+                    sTF = "H1";
+                }
+                else if (_TF_temp == "Daily")
+                {
+                    sTF = "D1";
+                }
+                else
+                {
+                    _TF_temp = _TF_temp.Replace("our", "");
+                    _TF_temp = _TF_temp.Replace("inute", "");
+                    _TF_temp = _TF_temp.Replace("aily", "");
+                    _TF_temp = _TF_temp.Replace("eekly", "");
+                    sTF = _TF_temp;
+                }
+                return sTF;
+            }
+
+            private double EquityAtRisk(double AccountSize, double Px, double SL, double OrderVolume, Symbol Asset)
+            {
+                double Equity = (Px - SL) * Asset.PipValue * OrderVolume;
+                return Math.Round(Equity * 100 / AccountSize, 3);
+            }
+
+            private double GetOrderVolume(Symbol Asset, double StopLoss, double Risk, int NoOfTrades, TradeType TradeDir, int TradeLookBack)
+            {
+                double risk_tranche = Risk / NoOfTrades;
+                double _OrderVolume = ((bot.Account.Balance * risk_tranche / 100) / StopLoss / Asset.PipValue);
+                double FinalVolume = Math.Max(1000.0, Math.Min(BadVolumeSize, _OrderVolume));
+                FinalVolume = LastWinRate(TradeDir, TradeLookBack) < 0.6 ? 1000 : Asset.NormalizeVolumeInUnits(FinalVolume, RoundingMode.ToNearest);
+                return FinalVolume;
+            }
+            private IEnumerable<Position> FilterPositions(string Label, Symbol Asset, TradeType TradeDirection)
+            {
+                return bot.Positions.Where(p => p.Label == Label && p.SymbolName == Asset.Name && p.TradeType == TradeDirection);
+            }
+
+            private IEnumerable<PendingOrder> FilteredOrders(string Label, Symbol Asset, TradeType TradeDirection)
+            {
+                return bot.PendingOrders.Where(o => o.Label == Label && o.SymbolName == Asset.Name && o.TradeType == TradeDirection);
+            }
+
+            private void CancelAllOrders(string Label, Symbol Asset, TradeType TradeDirection)
+            {
+                foreach (var order in FilteredOrders(Label, Asset, TradeDirection))
+                    bot.CancelPendingOrder(order);
+            }
+
+            private void CloseAllPositions(string Label, Symbol Asset, TradeType TradeDirection)
+            {
+                foreach (var position in FilterPositions(Label, Asset, TradeDirection))
+                    bot.ClosePosition(position);
+            }
+
+        }
+    }
+
+}
